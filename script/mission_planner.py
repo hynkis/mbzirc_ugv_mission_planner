@@ -29,9 +29,9 @@ class Mission_Planner(object):
         self.block_yaw = None
         self.depth     = None
  
-        self.omobot_state     = 0  # 0 : Not Yet / 1 : arrived blocks / 2 : arrived site
-        self.ur5_load_state   = 0  # 0 : nothing / 1 : load_move_xy   / 2 : load_move_vertical_down   / 3 : load_move_vertical_up   / 4 : load_move_to_grab
-        self.ur5_unload_state = 0  # 0 : nothing / 5 : unload_move_xy / 6 : unload_move_vertical_down / 7 : unload_move_vertical_up / 8 : unload_move_to_grab
+        self.omobot_state  = 0  # 0 : nothing / 1 : arrived block_1 / 2 : arrived block_2 / 3 : arrived site
+        self.ur5_state     = 0  # 0 : nothing / 1 : load            / 2 : unload
+        # self.ur5_unload_state = 0  # 0 : nothing / 5 : unload_move_xy / 6 : unload_move_vertical_down / 7 : unload_move_vertical_up / 8 : unload_move_to_grab
 
         # ================================================================ #
         # ==================== for ROS Initialization ==================== #
@@ -41,20 +41,14 @@ class Mission_Planner(object):
         # self.sub_real_sense = rospy.Subscriber('real_sense/block_pose', block_pose, self.callback_real_sense)
         self.sub_mission_start = rospy.Subscriber('mission_start', Bool, self.callback_mission_start)
 
-        """
-        @ UR5 state
-            0 : nothing / 1 : done load_move_xy   / 2 : done load_move_vertical_down   / 3 : done load_move_vertical_up   / 4 : done load_move_to_grab
-            0 : nothing / 5 : done unload_move_xy / 6 : done unload_move_vertical_down / 7 : done unload_drop             / 8 : done unload_move_to_idle
-        """
-
-        self.sub_real_sense = rospy.Subscriber('block_pose', block_pose, self.callback_real_sense)
+        # self.sub_real_sense = rospy.Subscriber('block_pose', block_pose, self.callback_real_sense)
         self.sub_ur5        = rospy.Subscriber('ur5/state', ur5_state, self.callback_ur5)
         self.sub_omobot     = rospy.Subscriber('omobot/state', omobot_state, self.callback_omobot)
 
         # For ROS Publishing
-        self.pub_real_sense = rospy.Publisher('real_sense/flag', Int32, queue_size=1)         # data flag (0 : nothing / 1 : x,y,z,yaw / 2 : depth)
-        self.pub_ur5        = rospy.Publisher('ur5/flag', Int32, queue_size=1)                # action flag
-        self.pub_omobot     = rospy.Publisher('omobot/destination_flag', Int32, queue_size=1) # destination flag. (0 : stop / 1 : to blocks / 2 : to Site)
+        # self.pub_real_sense = rospy.Publisher('real_sense/flag', Int32, queue_size=1)         # data flag (0 : nothing / 1 : x,y,z,yaw / 2 : depth)
+        self.pub_ur5        = rospy.Publisher('ur5/flag', Int32, queue_size=1)    # flag for action.  (0 : nothing / 1 : load      / 2 : unload)
+        self.pub_omobot     = rospy.Publisher('omobot/flag', Int32, queue_size=1) # flag for driving. (0 : nothing / 1 : to block_1 / 1 : to block_1 / 2 : to site)
 
         self.rate = rospy.Rate(10)
 
@@ -91,13 +85,15 @@ class Mission_Planner(object):
         rospy.loginfo("Subscrived from real sense")
 
     def callback_ur5(self, msg):
-        self.ur5_load_state = msg.load_state     # 0 : nothing / 1 : load_move_xy   / 2 : load_move_vertical_down   / 3 : load_move_vertical_up   / 4 : load_move_to_grab
-        self.ur5_unload_state = msg.unload_state # 0 : nothing / 5 : unload_move_xy / 6 : unload_move_vertical_down / 7 : unload_drop             / 8 : unload_move_to_idle
+        self.ur5_state = msg.state  # 0 : nothing / 1 : loaded / 2 : unloaded
+
+        # self.ur5_load_state = msg.load_state     # 0 : nothing / 1 : load_move_xy   / 2 : load_move_vertical_down   / 3 : load_move_vertical_up   / 4 : load_move_to_grab
+        # self.ur5_unload_state = msg.unload_state # 0 : nothing / 5 : unload_move_xy / 6 : unload_move_vertical_down / 7 : unload_drop             / 8 : unload_move_to_idle
 
         rospy.loginfo("Subscrived from ur5")
 
     def callback_omobot(self, msg):
-        self.omobot_state = msg.state            # 0 : Not Yet / 1 : arrived blocks / 2 : arrived site
+        self.omobot_state = msg.state            # 0 : nothing / 1 : arrived blocks / 2 : arrived site
 
         rospy.loginfo("Subscrived from omobot")
 
@@ -115,66 +111,126 @@ def main():
             # ====== State : idle ====== #
             # ========================== #
             if mission_planner.state == 'idle':
+
                 # Drive
                 if mission_planner.omobot_state == 0: # when robot is not blocks nor site
-                    if mission_planner.ur5_unload_state == 0:
-                        print("from idle to drive. state :", mission_planner.state)
+                    if mission_planner.ur5_state == 0:                                     # if ur5 is init
+                        print("from idle to drive. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
                         mission_planner.drive()
-                    else:
-                        mission_planner.pub_ur5.publish(0) # initialize ur5 states
 
-                # Load or Move to site
-                if mission_planner.omobot_state == 1: # at blocks
-                    if mission_planner.ur5_load_state == 0:
-                        print("from idle to load. state :", mission_planner.state)
+                    else:
+                        print("Re initialization. ")                                         # re init robots
+                        mission_planner.pub_ur5.publish(0)
+
+                # Load or Move to site at Block_1
+                if mission_planner.omobot_state == 1: # at block_1
+                    if mission_planner.ur5_state == 0:                                     # if ur5 is init
+                        print("from idle to load block_1. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
                         mission_planner.load_block()
-                    else:
-                        print("from idle to drive. state :", mission_planner.state)
+
+                    elif mission_planner.ur5_state == 1:                                   # if ur5 finish loading at block_1
+                        print("Finish loading block_1. Go block_2. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
                         mission_planner.drive()
+
+                    else:
+                        print("Re initialization")                                         # re init robots
+                        mission_planner.pub_omobot.publish(0)
+                        mission_planner.pub_ur5.publish(0)
+
+                # Load or Move to site at Block_2
+                if mission_planner.omobot_state == 2: # at block_2
+                    if mission_planner.ur5_state == 0:                                     # if ur5 is init
+                        print("from idle to load block_2. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.load_block()
+
+                    elif mission_planner.ur5_state == 1:                                   # if ur5 finish loading at block_2
+                        print("Finish loading block_2. Go site. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.drive()
+
+                    else:
+                        print("Re initialization")                                         # re init robots
+                        mission_planner.pub_omobot.publish(0)
+                        mission_planner.pub_ur5.publish(0)
                 
-                # Unload or Move to blocks
-                if mission_planner.omobot_state == 2: # at site
-                    if mission_planner.ur5_unload_state == 0:
-                        print("from idle to unload. state :", mission_planner.state)
+                # Unload or Move to blocks at Site
+                if mission_planner.omobot_state == 3: # at site
+                    if mission_planner.ur5_state == 0:                                     # if ur5 is init
+                        print("from idle to unload. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
                         mission_planner.unload_block()
+
+                    elif mission_planner.ur5_state == 2:                                   # if ur5 finish unloading at site
+                        print("Finish one sequence. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.pub_omobot.publish(0)
+                        mission_planner.pub_ur5.publish(0)
+
                     else:
-                        mission_planner.pub_ur5.publish(0) # initialize ur5 states
-                        print("from idle to drive. state :", mission_planner.state)
-                        mission_planner.drive()
+                        print("Re initialization")                                         # re init robots
+                        mission_planner.pub_omobot.publish(0)
+                        mission_planner.pub_ur5.publish(0)
 
             # =========================== #
             # ===== State : driving ===== #
             # =========================== #
             if mission_planner.state == 'driving':
-                # Move to blocks or site
-                if mission_planner.omobot_state == 0: # when robot is not blocks nor site
-                    if mission_planner.ur5_load_state == 0 and mission_planner.ur5_unload_state == 0:
-                        print("Move to blocks")
-                        mission_planner.pub_omobot.publish(1) # move to blocks
-                    elif mission_planner.ur5_load_state != 0 and mission_planner.ur5_unload_state == 0:
-                        print("Move to site")
-                        mission_planner.pub_omobot.publish(2) # move to site
+
+                # Move to block_1 at init_pose
+                if mission_planner.omobot_state == 0: # when robot is init
+                    if mission_planner.ur5_state == 0:        # if ur5 is init
+                        print("Move to block_1. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.pub_omobot.publish(1)
+
                     else:
                         print("Re initialize")
-                        mission_planner.pub_ur5.publish(0) # re-initialize ur5 states
-
-                # Arrived or Move to site
-                if mission_planner.omobot_state == 1: # at blocks
-                    if mission_planner.ur5_load_state == 0:
-                        print("Arrived blocks")
+                        mission_planner.pub_ur5.publish(0)    # re-initialize ur5 states
                         mission_planner.arrived()
-                    else:
-                        print("Move to site")
-                        mission_planner.pub_omobot.publish(2) # move to site
 
-                # Arrived or Move to block
+                # Arrived or Move to block_2 at block_1
+                if mission_planner.omobot_state == 1: # at block_1
+                    if mission_planner.ur5_state == 0:        # if ur5 is init
+                        print("Arrived block_1. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.arrived()
+
+                    elif mission_planner.ur5_state == 1:      # if ur5 finish loading block
+                        print("Move to block_2. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.pub_omobot.publish(2)
+
+                    else:                                     # re init robots
+                        print("Re initialization")
+                        mission_planner.pub_omobot.publish(0)
+                        mission_planner.pub_ur5.publish(0)
+                        mission_planner.arrived()
+
+                # Arrived or Move to site at block_2
+                if mission_planner.omobot_state == 2: # at block_2
+                    if mission_planner.ur5_state == 0:        # if ur5 is init
+                        print("Arrived block_2. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.arrived()
+
+                    elif mission_planner.ur5_state == 1:      # if ur5 finish loading block
+                        print("Move to site. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.pub_omobot.publish(2)
+
+                    else:                                     # re init robots
+                        print("Re initialization")
+                        mission_planner.pub_omobot.publish(0)
+                        mission_planner.pub_ur5.publish(0)
+                        mission_planner.arrived()
+
+                # Arrived or Done one sequence
                 if mission_planner.omobot_state == 2: # at site
-                    if mission_planner.ur5_unload_state == 0:
-                        print("Arrived site")
+                    if mission_planner.ur5_state == 0:        # if ur5 is init
+                        print("Arrived site. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
                         mission_planner.arrived()
-                    else:
-                        print("Move to blocks")
-                        mission_planner.pub_omobot.publish(1) # move to blocks
+
+                    elif mission_planner.ur5_state == 2:      # if ur5 finish unloading (Done one sequence)
+                        print("Done a sequence. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.arrived()
+
+                    else:                                     # re init robots
+                        print("Re initialization")
+                        mission_planner.pub_omobot.publish(0)
+                        mission_planner.pub_ur5.publish(0)
+                        mission_planner.arrived()
 
             # =========================== #
             # ===== State : loading ===== #
@@ -183,22 +239,55 @@ def main():
                 # Stop driving
                 mission_planner.pub_omobot.publish(0)
 
-                mission_planner.pub_ur5.publish()
-                if mission_planner.ur5_load_state == 0: # Init state
-                    print("publish real sense flag 1 (x,y,z,yaw)")
-                    mission_planner.pub_ur5.publish(1)     # Move xy
-                elif mission_planner.ur5_load_state == 1: # Done Move xy
-                    print("publish real sense flag 2 (depth)")
-                    mission_planner.pub_ur5.publish(2)     # Move vertical down
-                elif mission_planner.ur5_load_state == 2: # Done Move vertical down
-                    print("publish real sense flag 2 (depth)")
-                    mission_planner.pub_ur5.publish(3)     # Move vertical up
-                elif mission_planner.ur5_load_state == 3: # Done Move vertical up
-                    print("publish real sense flag 2 (depth)")
-                    mission_planner.pub_ur5.publish(4)     # Move to grab
-                else: # mission_planner.ur5_load_state == 4: # Done Move to grab
-                    print("publish real sense flag 0 (init)")
-                    mission_planner.loaded()
+                # Load block 1 or Move to block_2
+                if mission_planner.omobot_state == 1: # at block_1
+                    if mission_planner.ur5_state == 0:        # if ur5 is init
+                        print("Load block_1. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.pub_ur5.publish(1)
+
+                    elif mission_planner.ur5_state == 1:      # if ur5 finish loading block
+                        print("Finished loading. Re-init UR5. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.pub_ur5.publish(0)
+                        mission_planner.loaded()
+
+                    else:                                     # re init robots
+                        print("Re initialization")
+                        mission_planner.pub_omobot.publish(0)
+                        mission_planner.pub_ur5.publish(0)
+                        mission_planner.loaded()
+
+                # Load block_2 or Move to site
+                if mission_planner.omobot_state == 2: # at block_2
+                    if mission_planner.ur5_state == 0:        # if ur5 is init
+                        print("Load block_2. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.pub_ur5.publish(1)
+
+                    elif mission_planner.ur5_state == 1:      # if ur5 finish loading block
+                        print("Finished loading. Re-init UR5. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.pub_ur5.publish(0)
+                        mission_planner.loaded()
+
+                    else:                                     # re init robots
+                        print("Re initialization")
+                        mission_planner.pub_omobot.publish(0)
+                        mission_planner.pub_ur5.publish(0)
+                        mission_planner.loaded()
+
+                # if mission_planner.ur5_state == 0: # Init state
+                #     print("publish real sense flag 1 (x,y,z,yaw)")
+                #     mission_planner.pub_ur5.publish(1)     # Move xy
+                # elif mission_planner.ur5_load_state == 1: # Done Move xy
+                #     print("publish real sense flag 2 (depth)")
+                #     mission_planner.pub_ur5.publish(2)     # Move vertical down
+                # elif mission_planner.ur5_load_state == 2: # Done Move vertical down
+                #     print("publish real sense flag 2 (depth)")
+                #     mission_planner.pub_ur5.publish(3)     # Move vertical up
+                # elif mission_planner.ur5_load_state == 3: # Done Move vertical up
+                #     print("publish real sense flag 2 (depth)")
+                #     mission_planner.pub_ur5.publish(4)     # Move to grab
+                # else: # mission_planner.ur5_load_state == 4: # Done Move to grab
+                #     print("publish real sense flag 0 (init)")
+                #     mission_planner.loaded()
 
             # ============================= #
             # ===== State : unloading ===== #
@@ -207,22 +296,40 @@ def main():
                 # Stop driving
                 mission_planner.pub_omobot.publish(0)
 
-                mission_planner.pub_ur5.publish()
-                if mission_planner.ur5_unload_state == 0: # Init state
-                    print("publish real sense flag 2 (depth)")
-                    mission_planner.pub_ur5.publish(5)     # Move xy
-                elif mission_planner.ur5_unload_state == 5: # Done Move xy
-                    print("publish real sense flag 2 (depth)")
-                    mission_planner.pub_ur5.publish(6)     # Move vertical down
-                elif mission_planner.ur5_unload_state == 6: # Done Move vertical down
-                    print("publish real sense flag 2 (depth)")
-                    mission_planner.pub_ur5.publish(7)     # Drop
-                elif mission_planner.ur5_unload_state == 7: # Done Drop
-                    print("publish real sense flag 0 (init)")
-                    mission_planner.pub_ur5.publish(8)     # Move to idle
-                else: # mission_planner.ur5_unload_state == 8: # Done Move to idle
-                    print("publish real sense flag 0 (init)")
-                    mission_planner.unloaded()
+                # Unload blocks or Done one sequence
+                if mission_planner.omobot_state == 2: # at site
+                    if mission_planner.ur5_state == 0:        # if ur5 is init
+                        print("Unload blocks. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.pub_ur5.publish(2)
+
+                    elif mission_planner.ur5_state == 2:      # if ur5 finish unloading blocks
+                        print("Finished unloading. (Planner: %s, UR5: %d, Omobot: %d)" %(mission_planner.state, mission_planner.ur5_state, mission_planner.omobot_state))
+                        mission_planner.pub_ur5.publish(0)
+                        mission_planner.unloaded()
+
+                    else:                                     # re init robots
+                        print("Re initialization")
+                        mission_planner.pub_omobot.publish(0)
+                        mission_planner.pub_ur5.publish(0)
+                        mission_planner.unloaded()
+
+
+                # mission_planner.pub_ur5.publish()
+                # if mission_planner.ur5_unload_state == 0: # Init state
+                #     print("publish real sense flag 2 (depth)")
+                #     mission_planner.pub_ur5.publish(5)     # Move xy
+                # elif mission_planner.ur5_unload_state == 5: # Done Move xy
+                #     print("publish real sense flag 2 (depth)")
+                #     mission_planner.pub_ur5.publish(6)     # Move vertical down
+                # elif mission_planner.ur5_unload_state == 6: # Done Move vertical down
+                #     print("publish real sense flag 2 (depth)")
+                #     mission_planner.pub_ur5.publish(7)     # Drop
+                # elif mission_planner.ur5_unload_state == 7: # Done Drop
+                #     print("publish real sense flag 0 (init)")
+                #     mission_planner.pub_ur5.publish(8)     # Move to idle
+                # else: # mission_planner.ur5_unload_state == 8: # Done Move to idle
+                #     print("publish real sense flag 0 (init)")
+                #     mission_planner.unloaded()
 
             mission_planner.rate.sleep()
 
