@@ -1,2 +1,1 @@
-int32 load_state
-int32 unload_state
+int32 state
